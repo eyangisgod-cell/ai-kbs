@@ -1,0 +1,55 @@
+# AI-KBS repo-root golangci-lint configuration
+# T0.2 deliverable: thin shim that points golangci-lint at the per-module
+# config under backend/.golangci.yml.
+#
+# Rationale:
+#   The project ships one Go module at backend/ (forked from WeKnora).
+#   golangci-lint v2 does NOT walk into subdirs automatically when the
+#   top-level .golangci.yml lives at the repo root with no `run.modules`
+#   settings — it expects the config next to the go.mod. To keep the
+#   aggregate `make lint` and the CI job identical, we declare an
+#   `issues.exclude-dirs` list that hides everything except `backend/`,
+#   and document that backend/.golangci.yml is the source of truth.
+#
+# When/if cli/ becomes a real module (T0.x), add `- cli` to `linters` runs
+# via a per-module config there.
+
+version: "2"
+
+run:
+  modules-download-mode: readonly
+  timeout: 5m
+
+linters:
+  # Disable the default enabled linters at the repo root; we only run them
+  # via the backend/.golangci.yml invocation in CI. This file exists so
+  # `golangci-lint run ./...` from the repo root produces a clean baseline.
+  default: none
+  enable:
+    - gofmt
+    - goimports
+    - govet
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/eyangisgod-cell/ai-kbs
+
+issues:
+  exclude-dirs:
+    - node_modules
+    - dist
+    - frontend
+    - helm
+    - docs
+    - scripts
+    - mcp-server
+    - sag-bridge
+    - docreader
+    - .claude
+    - .trellis
+    - cli
