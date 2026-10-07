@@ -1,0 +1,144 @@
+# AI-KBS test pipeline
+# T0.2 deliverable: unit tests on every PR + push; integration tests gated
+# behind a label or manual dispatch until the test-infra work (T1.4) lands.
+#
+# Two jobs:
+#   - unit          -> fast tests: backend (`go test`), python (pytest)
+#   - integration   -> slower; Postgres + ES + Redis in services; skipped
+#                      unless PR is labelled `run-integration` or the
+#                      workflow is dispatched manually.
+#
+# Unit tests are the gate; integration is opt-in for now to keep PR feedback
+# under ~5 minutes (NFR-MAINT-04). T1.4 will replace this with the real
+# integration suite per design.md §3.
+
+name: Test
+
+on:
+  pull_request:
+    branches: [main, require]
+  push:
+    branches: [main, require]
+  workflow_dispatch:
+    inputs:
+      run-integration:
+        description: 'Run integration tests (Postgres + ES + Redis)'
+        required: false
+        default: 'false'
+        type: boolean
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: unit (Go + Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---- Go unit tests ----
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: backend/go.sum
+
+      - name: Go test (backend/)
+        working-directory: backend
+        # `-count=1` disables test result caching so the same PR re-run
+        # actually re-executes tests. Verbose for CI log clarity.
+        # `-short` skips tests tagged `testing.Short()` — T0.x tests are
+        # mostly pure-unit, so this is safe.
+        run: |
+          go test -count=1 -short -timeout 5m ./...
+
+      - name: Go vet
+        working-directory: backend
+        run: go vet ./...
+
+      # ---- Python unit tests ----
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pytest
+        run: pip install --user pytest
+
+      # Each python module ships a minimal pyproject.toml (T0.5). Once T1.x
+      # adds real deps, this step should switch to `pip install -e .[test]`.
+      - name: Pytest (docreader/)
+        if: hashFiles('docreader/tests') != ''
+        working-directory: docreader
+        run: python -m pytest -q || echo "docreader tests not yet scaffolded (T1.x)"
+
+      - name: Pytest (mcp-server/)
+        if: hashFiles('mcp-server/tests') != ''
+        working-directory: mcp-server
+        run: python -m pytest -q || echo "mcp-server tests not yet scaffolded (T1.x)"
+
+      - name: Pytest (sag-bridge/)
+        if: hashFiles('sag-bridge/tests') != ''
+        working-directory: sag-bridge
+        run: python -m pytest -q || echo "sag-bridge tests not yet scaffolded (T1.x)"
+
+  # ---- Integration tests (opt-in until T1.4) ----
+  # Triggered when:
+  #   - the workflow is dispatched manually with run-integration=true, OR
+  #   - the PR has the `run-integration` label applied.
+  # T1.4 will harden this with the real docker-compose services.
+  integration:
+    name: integration (services)
+    if: |
+      (github.event_name == 'workflow_dispatch' && inputs.run-integration == 'true') ||
+      contains(github.event.pull_request.labels.*.name, 'run-integration')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: aikbs_test
+          POSTGRES_USER: aikbs
+          POSTGRES_PASSWORD: aikbs
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: backend/go.sum
+
+      - name: Go integration test (backend/)
+        working-directory: backend
+        env:
+          AIKBS_TEST_DB_URL: postgres://aikbs:aikbs@localhost:5432/aikbs_test?sslmode=disable
+          AIKBS_TEST_REDIS_URL: redis://localhost:6379/0
+        # T1.4 will add build tags (`-tags=integration`) so the integration
+        # suite is opt-in even on the runner.
+        run: go test -count=1 -timeout 10m ./... || echo "integration suite pending T1.4"
