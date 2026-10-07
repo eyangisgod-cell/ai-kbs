@@ -1,3 +1,13 @@
+//go:build cgo
+
+// File-level note: pg_query_go/v6 is a CGO library (uses libpg_query C
+// sources). The pure-Go twin lives in inject_stub.go under
+// `//go:build !cgo`. This file is excluded from non-CGO builds so that
+// Windows dev workstations (no gcc) and slim CI runners can compile the
+// backend without a C toolchain.
+//
+// TODO(T1.x): remove this file once a C toolchain is provisioned on every
+// developer workstation and CI runner.
 package utils
 
 import (

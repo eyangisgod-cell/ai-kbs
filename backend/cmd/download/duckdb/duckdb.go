@@ -1,3 +1,13 @@
+//go:build cgo
+
+// File-level note: duckdb-go is a CGO driver. The download helper only
+// matters for in-memory DuckDB usage; it is excluded from non-CGO builds
+// so the rest of `cmd/download` still compiles on dev workstations without
+// gcc. The CLI command that invokes this file produces a clear error when
+// built without CGO (the binary itself is buildable).
+//
+// TODO(T1.x): remove this file once a C toolchain is provisioned on every
+// developer workstation and CI runner.
 package main
 
 import (

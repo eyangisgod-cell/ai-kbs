@@ -1,3 +1,12 @@
+//go:build cgo
+
+// File-level note: this test exercises the in-memory DuckDB engine. The
+// driver is CGO-only; the test is excluded from non-CGO builds. CI runners
+// that run `go test ./...` without CGO will skip this file via the build
+// tag.
+//
+// TODO(T1.x): remove this file once a C toolchain is provisioned on every
+// developer workstation and CI runner.
 package tools
 
 import (

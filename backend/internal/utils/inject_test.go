@@ -1,3 +1,14 @@
+//go:build cgo
+
+// File-level note: this test exercises the full SQL parser and injection
+// heuristics that live in inject.go (CGO via pg_query_go). The pure-Go
+// stub in inject_stub.go intentionally accepts all SQL and skips the
+// heuristics — there is nothing meaningful to test against in non-CGO
+// builds. CI runners that run `go test ./...` without CGO will skip this
+// file via the build tag.
+//
+// TODO(T1.x): remove this file once a C toolchain is provisioned on every
+// developer workstation and CI runner.
 package utils
 
 import (

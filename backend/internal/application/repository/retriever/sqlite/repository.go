@@ -11,7 +11,6 @@ import (
 	"github.com/eyangisgod-cell/ai-kbs/internal/logger"
 	"github.com/eyangisgod-cell/ai-kbs/internal/types"
 	"github.com/eyangisgod-cell/ai-kbs/internal/types/interfaces"
-	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -381,7 +380,7 @@ func (r *sqliteRepository) vectorRetrieve(ctx context.Context, params types.Retr
 	dim := len(params.Embedding)
 	r.ensureVecTable(dim)
 
-	queryBlob, err := sqlite_vec.SerializeFloat32(params.Embedding)
+	queryBlob, err := vecSerializeFloat32(params.Embedding)
 	if err != nil {
 		return nil, fmt.Errorf("serialize query vector failed: %w", err)
 	}
@@ -496,7 +495,7 @@ func extractEmbedding(params map[string]any, sourceID string) []float32 {
 
 func (r *sqliteRepository) insertVec(_ context.Context, rowID uint, dim int, emb []float32) {
 	r.ensureVecTable(dim)
-	blob, err := sqlite_vec.SerializeFloat32(emb)
+	blob, err := vecSerializeFloat32(emb)
 	if err != nil {
 		return
 	}

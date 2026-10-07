@@ -17,8 +17,6 @@ import (
 	"strings"
 	"time"
 
-	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
-	_ "github.com/duckdb/duckdb-go/v2"
 	esv7 "github.com/elastic/go-elasticsearch/v7"
 	"github.com/elastic/go-elasticsearch/v8"
 	_ "github.com/go-sql-driver/mysql" // 给 Doris (database/sql) 注册 MySQL 协议驱动
@@ -626,7 +624,7 @@ func initDatabase(cfg *config.Config) (*gorm.DB, error) {
 				return nil, fmt.Errorf("failed to create SQLite data directory %s: %w", dir, err)
 			}
 		}
-		sqlite_vec.Auto()
+		vecAuto()
 		dsn := dbPath + "?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on"
 		dialector = sqlite.Open(dsn)
 		sqliteDBPath = dbPath
