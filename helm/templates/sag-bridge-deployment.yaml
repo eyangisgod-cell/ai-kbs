@@ -1,0 +1,88 @@
+{{- if .Values.sagBridge.enabled -}}
+{{- $fullname := include "ai-kbs.fullname" . -}}
+{{- $component := "sag-bridge" -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-{{ $component }}
+  labels:
+    {{- include "ai-kbs.componentLabels" (dict "ctx" . "component" $component) | nindent 4 }}
+spec:
+  replicas: {{ .Values.sagBridge.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "ai-kbs.componentSelector" (dict "ctx" . "component" $component) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ai-kbs.componentLabels" (dict "ctx" . "component" $component) | nindent 8 }}
+    spec:
+      {{- with .Values.serviceAccount.name }}
+      serviceAccountName: {{ . }}
+      {{- end }}
+      containers:
+        - name: {{ $component }}
+          image: {{ include "ai-kbs.image" (dict "image" .Values.sagBridge.image "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.sagBridge.service.port }}
+          env:
+            {{- range $key, $value := .Values.sagBridge.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.sagBridge.resources | nindent 12 }}
+          {{- if .Values.sagBridge.persistence.enabled }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          {{- end }}
+      {{- if .Values.sagBridge.persistence.enabled }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ $fullname }}-{{ $component }}-data
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-{{ $component }}
+  labels:
+    {{- include "ai-kbs.componentLabels" (dict "ctx" . "component" $component) | nindent 4 }}
+spec:
+  type: {{ .Values.sagBridge.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.sagBridge.service.port }}
+      targetPort: http
+  selector:
+    {{- include "ai-kbs.componentSelector" (dict "ctx" . "component" $component) | nindent 4 }}
+{{- if .Values.sagBridge.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fullname }}-{{ $component }}-data
+  labels:
+    {{- include "ai-kbs.componentLabels" (dict "ctx" . "component" $component) | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.sagBridge.persistence.size }}
+  {{- with .Values.global.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}
+{{- end }}

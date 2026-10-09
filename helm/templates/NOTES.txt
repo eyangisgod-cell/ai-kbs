@@ -1,0 +1,55 @@
+AI-KBS v{{ .Chart.AppVersion }} has been installed as release "{{ .Release.Name }}".
+
+=== Components ===
+
+{{- if .Values.backend.enabled }}
+  backend     {{ include "ai-kbs.fullname" . }}-backend        {{ .Values.backend.replicaCount }} replica(s)  port {{ .Values.backend.service.port }}
+{{- end }}
+{{- if .Values.mcpServer.enabled }}
+  mcp-server  {{ include "ai-kbs.fullname" . }}-mcp-server     {{ .Values.mcpServer.replicaCount }} replica(s)  port {{ .Values.mcpServer.service.port }}
+{{- end }}
+{{- if .Values.sagBridge.enabled }}
+  sag-bridge  {{ include "ai-kbs.fullname" . }}-sag-bridge     {{ .Values.sagBridge.replicaCount }} replica(s)  port {{ .Values.sagBridge.service.port }}
+{{- end }}
+{{- if .Values.docreader.enabled }}
+  docreader   {{ include "ai-kbs.fullname" . }}-docreader      {{ .Values.docreader.replicaCount }} replica(s)  port {{ .Values.docreader.service.port }}
+{{- end }}
+{{- if .Values.langfuse.enabled }}
+  langfuse    {{ include "ai-kbs.fullname" . }}-langfuse       (web + worker)
+{{- end }}
+{{- if .Values.postgres.enabled }}
+  postgres    {{ include "ai-kbs.fullname" . }}-postgres       (StatefulSet)
+{{- end }}
+{{- if .Values.elasticsearch.enabled }}
+  elasticsearch {{ include "ai-kbs.fullname" . }}-elasticsearch (StatefulSet)
+{{- end }}
+{{- if .Values.redis.enabled }}
+  redis       {{ include "ai-kbs.fullname" . }}-redis          (StatefulSet)
+{{- end }}
+{{- if .Values.rabbitmq.enabled }}
+  rabbitmq    {{ include "ai-kbs.fullname" . }}-rabbitmq       (StatefulSet)
+{{- end }}
+
+=== Next steps ===
+
+1. Watch pods come up:
+     kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/part-of=ai-kbs -w
+
+2. Port-forward the backend for local testing:
+     kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "ai-kbs.fullname" . }}-backend 8080:8080
+     curl http://localhost:8080/health
+
+{{- if .Values.ingress.enabled }}
+
+3. Visit the configured host:
+{{- range .Values.ingress.hosts }}
+     https://{{ .host }}
+{{- end }}
+{{- end }}
+
+4. Install the CLI on your workstation:
+     curl -fsSL https://github.com/eyangisgod-cell/ai-kbs/releases/latest/download/ai-kbs-$(uname -s | tr A-Z a-z)-amd64 -o ai-kbs
+     chmod +x ai-kbs && sudo mv ai-kbs /usr/local/bin/
+
+5. Run the AI agent install:
+     ai-kbs mcp install --agent claude-code

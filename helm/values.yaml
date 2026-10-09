@@ -1,0 +1,245 @@
+# AI-KBS Helm values.yaml (T0.4)
+#
+# Every knob in the templates is exposed here. Required overrides for a
+# production install are flagged with `# prod: required` comments.
+#
+# Usage:
+#   helm install ai-kbs ./helm -f my-overrides.yaml
+#   helm template ai-kbs ./helm --debug
+#
+# Quick local dev (kind / minikube):
+#   helm install ai-kbs ./helm \
+#     --set global.imagePullPolicy=IfNotPresent \
+#     --set backend.image.tag=dev \
+#     --set mcpServer.image.tag=dev
+#   # then: kubectl port-forward svc/ai-kbs-backend 8080:8080
+
+# ---------------------------------------------------------------------------
+# Global
+# ---------------------------------------------------------------------------
+global:
+  imagePullPolicy: IfNotPresent
+  imagePullSecrets: []
+  storageClass: ""  # empty = use cluster default; set to "gp3" / "ssd" / etc. in prod
+
+nameOverride: ""
+fullnameOverride: ""
+
+# ---------------------------------------------------------------------------
+# Backend (Go / WeKnora fork)
+# ---------------------------------------------------------------------------
+backend:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: ghcr.io/eyangisgod-cell/ai-kbs/backend
+    tag: "1.0.0"  # prod: required
+    pullPolicy: ""
+  resources:
+    requests: {cpu: "200m", memory: "256Mi"}
+    limits:   {cpu: "2",    memory: "2Gi"}
+  service:
+    type: ClusterIP
+    port: 8080
+  env:
+    AIKBS_SERVER_HOST: "0.0.0.0"
+    AIKBS_SERVER_PORT: "8080"
+    # prod: required
+    AIKBS_DB_URL: "postgres://aikbs:CHANGE_ME@ai-kbs-postgres:5432/aikbs?sslmode=disable"
+    AIKBS_REDIS_URL: "redis://ai-kbs-redis:6379/0"
+    AIKBS_RABBITMQ_URL: "amqp://aikbs:CHANGE_ME@ai-kbs-rabbitmq:5672/"
+    AIKBS_ES_URL: "http://ai-kbs-elasticsearch:9200"
+    AIKBS_DOCREADER_ADDR: "ai-kbs-docreader:50051"
+    AIKBS_SAG_URL: "http://ai-kbs-sag-bridge:8090"
+    AIKBS_MCP_URL: "http://ai-kbs-mcp-server:8081"
+    AIKBS_LANGFUSE_URL: "http://ai-kbs-langfuse:3000"
+    AIKBS_LANGFUSE_OTLP: "http://ai-kbs-langfuse:3000/api/public/otel/v1/traces"
+    AIKBS_LANGFUSE_PUBLIC_KEY: ""  # prod: required (from Langfuse project)
+    AIKBS_LANGFUSE_SECRET_KEY: ""  # prod: required (from Langfuse project)
+  livenessProbe:
+    httpGet: {path: /health, port: http}
+    initialDelaySeconds: 30
+    periodSeconds: 15
+  readinessProbe:
+    httpGet: {path: /health, port: http}
+    initialDelaySeconds: 10
+    periodSeconds: 10
+  podDisruptionBudget: {minAvailable: 1}
+
+# ---------------------------------------------------------------------------
+# MCP server (Python / FastMCP)
+# ---------------------------------------------------------------------------
+mcpServer:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ghcr.io/eyangisgod-cell/ai-kbs/mcp-server
+    tag: "1.0.0"  # prod: required
+  resources:
+    requests: {cpu: "100m", memory: "128Mi"}
+    limits:   {cpu: "1",    memory: "512Mi"}
+  service:
+    type: ClusterIP
+    port: 8081
+  env:
+    AIKBS_BACKEND_URL: "http://ai-kbs-backend:8080"
+    AIKBS_MCP_TRANSPORT: "http"  # stdio | sse | http
+  podDisruptionBudget: {minAvailable: 1}
+
+# ---------------------------------------------------------------------------
+# SAG bridge (Python / FastAPI)
+# ---------------------------------------------------------------------------
+sagBridge:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ghcr.io/eyangisgod-cell/ai-kbs/sag-bridge
+    tag: "1.0.0"  # prod: required
+  resources:
+    requests: {cpu: "200m", memory: "256Mi"}
+    limits:   {cpu: "2",    memory: "2Gi"}
+  service:
+    type: ClusterIP
+    port: 8090
+  env:
+    SAG_LANCEDB_PATH: "/data/lancedb"
+  persistence:
+    enabled: true
+    size: 10Gi
+
+# ---------------------------------------------------------------------------
+# docreader (Python / gRPC)
+# ---------------------------------------------------------------------------
+docreader:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ghcr.io/eyangisgod-cell/ai-kbs/docreader
+    tag: "1.0.0"  # prod: required
+  resources:
+    requests: {cpu: "200m", memory: "256Mi"}
+    limits:   {cpu: "2",    memory: "1Gi"}
+  service:
+    type: ClusterIP
+    port: 50051
+
+# ---------------------------------------------------------------------------
+# PostgreSQL (T0.4 ships an inline StatefulSet for self-contained dev / K8s
+# clusters without a managed Postgres; production should set `enabled: false`
+# and point backend.env.AIKBS_DB_URL at a managed RDS / Cloud SQL / etc.)
+# ---------------------------------------------------------------------------
+postgres:
+  enabled: true
+  image:
+    repository: pgvector/pgvector
+    tag: "pg16"
+    pullPolicy: ""
+  auth:
+    username: aikbs
+    password: ""  # prod: required (or use existingSecret)
+    database: aikbs
+    existingSecret: ""
+  persistence:
+    size: 20Gi
+  resources:
+    requests: {cpu: "250m", memory: "512Mi"}
+    limits:   {cpu: "2",    memory: "2Gi"}
+
+# ---------------------------------------------------------------------------
+# Elasticsearch 8.x with IK Analysis
+# ---------------------------------------------------------------------------
+elasticsearch:
+  enabled: true
+  image:
+    repository: docker.elastic.co/elasticsearch/elasticsearch
+    tag: "8.13.4"
+  esJavaOpts: "-Xms1g -Xmx1g"
+  persistence:
+    size: 50Gi
+  resources:
+    requests: {cpu: "500m", memory: "1Gi"}
+    limits:   {cpu: "2",    memory: "3Gi"}
+
+# ---------------------------------------------------------------------------
+# Redis 7+
+# ---------------------------------------------------------------------------
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: "7.2-alpine"
+  persistence:
+    size: 5Gi
+  resources:
+    requests: {cpu: "100m", memory: "128Mi"}
+    limits:   {cpu: "1",    memory: "512Mi"}
+
+# ---------------------------------------------------------------------------
+# RabbitMQ 3.12+
+# ---------------------------------------------------------------------------
+rabbitmq:
+  enabled: true
+  image:
+    repository: rabbitmq
+    tag: "3.13-management-alpine"
+  auth:
+    username: aikbs
+    password: ""  # prod: required
+    existingSecret: ""
+  persistence:
+    size: 10Gi
+
+# ---------------------------------------------------------------------------
+# Langfuse v3 (web + worker)
+# ---------------------------------------------------------------------------
+langfuse:
+  enabled: true
+  image:
+    repository: langfuse/langfuse
+    tag: "3"
+  env:
+    NEXTAUTH_URL: "https://kbs.example.com"
+    NEXTAUTH_SECRET: ""   # prod: required
+    SALT: ""              # prod: required
+    ENCRYPTION_KEY: ""    # prod: required (32-byte hex)
+  persistence:
+    size: 10Gi
+
+# ---------------------------------------------------------------------------
+# Ingress
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: nginx
+  annotations: {}
+    # nginx.ingress.kubernetes.io/proxy-body-size: 100m
+  hosts:
+    - host: kbs.example.com
+      paths:
+        - path: /
+          service: backend
+          port: 8080
+        - path: /mcp
+          service: mcp-server
+          port: 8081
+  tls: []
+  # - secretName: ai-kbs-tls
+  #   hosts:
+  #     - kbs.example.com
+
+# ---------------------------------------------------------------------------
+# ServiceAccount + NetworkPolicy + PodMonitor
+# ---------------------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+networkPolicy:
+  enabled: true
+  ingressNamespaceSelector: {}
+
+podMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
