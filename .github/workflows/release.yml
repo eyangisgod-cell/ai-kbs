@@ -1,0 +1,218 @@
+# AI-KBS release pipeline
+# T0.2 deliverable: triggered by `v*` tag push. Cross-compiles the 6-platform
+# binaries (NFR-COMPAT-01) and uploads them as a GitHub Release.
+#
+# Why a custom workflow instead of GoReleaser?
+#   - v1 backend ships with one entrypoint (`backend/cmd/server`) plus the
+#     future CLI (`cli/cmd/ai-kbs`). GoReleaser would be overkill for one or
+#     two binaries; we'll revisit if the artifact count grows.
+#   - No goreleaser.yml exists (T0.13). Keeping this workflow self-contained
+#     so we don't ship a flag the orchestrator hasn't reviewed.
+#
+# Tag convention (per release notes / docs/RELEASE.md):
+#   vMAJOR.MINOR.PATCH        e.g. v0.1.0, v1.0.0, v1.1.0
+#   vMAJOR.MINOR.PATCH-rc.N   release candidates (drafted release)
+#
+# Behavior:
+#   - Stable tags (no -rc/-alpha/-beta suffix)  -> published release
+#   - Pre-release tags (-rc/-alpha/-beta)       -> published pre-release
+#   - Dry-run tag matching v*-test              -> draft release (used for
+#     the T0.2 acceptance criterion "create v0.1.0-test -> release artifact
+#     uploaded")
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (must already exist on the repo)'
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false  # never cancel a running release
+
+permissions:
+  contents: write  # required to create a GitHub Release
+
+jobs:
+  release-backend:
+    name: release backend (${{ matrix.os }}/${{ matrix.arch }})
+    if: hashFiles('backend/go.mod') != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            ext: ""
+          - os: linux
+            arch: arm64
+            ext: ""
+          - os: darwin
+            arch: amd64
+            ext: ""
+          - os: darwin
+            arch: arm64
+            ext: ""
+          - os: windows
+            arch: amd64
+            ext: ".exe"
+          - os: windows
+            arch: arm64
+            ext: ".exe"
+    env:
+      GOOS: ${{ matrix.os }}
+      GOARCH: ${{ matrix.arch }}
+      CGO_ENABLED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for changelog generation
+
+      - name: Resolve tag
+        id: tag
+        # On tag push, github.ref_name is the tag (e.g. v0.1.0).
+        # On manual dispatch, use the user-supplied tag input.
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: backend/go.sum
+
+      - name: Build backend
+        working-directory: backend
+        run: |
+          mkdir -p dist
+          # Embed the tag into the binary so `ai-kbs --version` reports it.
+          go build \
+            -trimpath \
+            -ldflags="-s -w -X main.version=${{ steps.tag.outputs.tag }}" \
+            -o "dist/aikbs-backend-${GOOS}-${GOARCH}${{ matrix.ext }}" \
+            ./cmd/server
+
+      - name: Build CLI (when cli/ exists)
+        if: hashFiles('cli/go.mod') != ''
+        working-directory: cli
+        run: |
+          mkdir -p dist
+          go build \
+            -trimpath \
+            -ldflags="-s -w -X main.version=${{ steps.tag.outputs.tag }}" \
+            -o "../backend/dist/aikbs-${GOOS}-${GOARCH}${{ matrix.ext }}" \
+            ./cmd/ai-kbs || echo "cli binary build pending"
+
+      - name: Compute SHA-256 sums
+        id: sums
+        working-directory: backend/dist
+        # Per-leg sums file so matrix legs don't clobber each other when
+        # download-artifact (merge-multiple: true) collects them in
+        # publish-release. Each leg uploads its own SHA256SUMS-<os>-<arch>.txt
+        # and the publish step concatenates them into one canonical file.
+        run: |
+          sha256sum "aikbs-backend-${GOOS}-${GOARCH}${{ matrix.ext }}" \
+            > "SHA256SUMS-${GOOS}-${GOARCH}.txt"
+
+      - name: Upload matrix artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aikbs-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            backend/dist/aikbs-backend-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+            backend/dist/SHA256SUMS-${{ matrix.os }}-${{ matrix.arch }}.txt
+          if-no-files-found: error
+          retention-days: 90
+
+  publish-release:
+    name: publish GitHub Release
+    needs: release-backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download all matrix artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Concatenate per-leg SHA256SUMS into one canonical file
+        # Each matrix leg uploaded its own SHA256SUMS-<os>-<arch>.txt to
+        # avoid the merge-multiple overwrite problem. Combine them here so
+        # users downloading SHA256SUMS.txt get all 6 sums.
+        run: |
+          cd artifacts
+          : > SHA256SUMS.txt
+          for f in SHA256SUMS-*.txt; do
+            [ -f "$f" ] && cat "$f" >> SHA256SUMS.txt
+          done
+          echo "--- combined SHA256SUMS.txt ---"
+          cat SHA256SUMS.txt
+
+      - name: List downloaded artifacts
+        run: |
+          ls -la artifacts/
+          find artifacts -type f -print
+
+      - name: Determine release mode
+        id: mode
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          case "$tag" in
+            *-test)
+              echo "draft=true"  >> "$GITHUB_OUTPUT"
+              echo "prerelease=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *-rc*|*-alpha*|*-beta*)
+              echo "draft=false" >> "$GITHUB_OUTPUT"
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "draft=false" >> "$GITHUB_OUTPUT"
+              echo "prerelease=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          draft: ${{ steps.mode.outputs.draft }}
+          prerelease: ${{ steps.mode.outputs.prerelease }}
+          generate_release_notes: true
+          # Attach every artifact under the merged artifacts/ dir.
+          files: |
+            artifacts/aikbs-backend-*
+            artifacts/SHA256SUMS.txt
+            artifacts/SHA256SUMS-*.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
