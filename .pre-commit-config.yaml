@@ -1,0 +1,74 @@
+# AI-KBS pre-commit hooks configuration
+# Generated for T0.5 (code tooling baseline); see implement.md §2.
+#
+# -------------------------------------------------------------------------
+# STATUS: OPTIONAL in v1.0.0 GA. Pre-commit is a developer-experience aid,
+# not a CI gate — CI runs the same hooks via `make lint`. Enable locally
+# with:
+#
+#     pip install pre-commit
+#     pre-commit install
+#
+# Once installed, the hooks fire on every `git commit`. To skip a hook
+# for a specific commit (e.g. an emergency hotfix), use `git commit -n`
+# or `git commit --no-verify`.
+# -------------------------------------------------------------------------
+#
+# T0.9 will wire the same hook IDs into the Makefile targets so that
+# `make lint` and `pre-commit run --all-files` produce identical output.
+# T1.22 (frontend scaffold) will add an `eslint` hook here once the
+# frontend baseline is stable; see .eslintrc.cjs for the activation
+# policy.
+
+repos:
+  # Built-in pre-commit-hooks: trivial file hygiene (trailing whitespace,
+  # final newline, YAML/JSON validity, large file detection, etc.).
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        # Markdown files often have intentional two-space line breaks
+        # at end of line (hard break); leave those alone.
+        args: [--markdown-linebreak-ext=md]
+        exclude: ^\.trellis/.*$
+      - id: end-of-file-fixer
+      - id: check-yaml
+        # .golangci.yml and pyproject.toml are valid YAML; pre-commit
+        # can choke on the .anchor syntax golangci-lint uses, so we
+        # narrow to our explicit list.
+        files: \.(yaml|yml)$
+        exclude: ^(\.golangci\.yml|backend/\.golangci\.yml)$
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=512]
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  # Go lint: golangci-lint with the same config CI runs.
+  - repo: https://github.com/golangci/golangci-lint
+    rev: v1.64.0
+    hooks:
+      - id: golangci-lint
+        # backend/ is the only Go module in the repo (T0.x); cli/ will
+        # become a separate module later, at which point we add another
+        # - id block with `files: ^cli/`.
+        files: ^backend/
+        # Match the Makefile `lint-backend` invocation: 5 minute budget
+        # so a slow analysis doesn't block local commits.
+        args: [--timeout=5m, --config=backend/.golangci.yml]
+
+  # Python lint: ruff with each module's pyproject.toml.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        # docreader/, mcp-server/, sag-bridge/ each have their own
+        # pyproject.toml; ruff auto-discovers the right one based on
+        # the file path.
+        files: ^(docreader|mcp-server|sag-bridge)/
+        args: [--fix]
+
+# Per T0.9 follow-up: add an `eslint` hook here once T1.22 lands.
+# Until then, .eslintrc.cjs files are present but the hook is dormant.
