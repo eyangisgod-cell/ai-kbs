@@ -1,0 +1,62 @@
+{{- if .Values.langfuse.enabled -}}
+{{- $fullname := include "ai-kbs.fullname" . -}}
+{{- $component := "langfuse" -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-{{ $component }}
+  labels:
+    {{- include "ai-kbs.componentLabels" (dict "ctx" . "component" $component) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "ai-kbs.componentSelector" (dict "ctx" . "component" $component) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ai-kbs.componentLabels" (dict "ctx" . "component" $component) | nindent 8 }}
+    spec:
+      {{- with .Values.serviceAccount.name }}
+      serviceAccountName: {{ . }}
+      {{- end }}
+      containers:
+        - name: web
+          image: {{ include "ai-kbs.image" (dict "image" .Values.langfuse.image "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            {{- range $key, $value := .Values.langfuse.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            - name: DATABASE_URL
+              value: "postgresql://{{ .Values.postgres.auth.username }}:{{ .Values.postgres.auth.password }}@{{ $fullname }}-postgres:5432/{{ .Values.postgres.auth.database }}"
+            - name: REDIS_CONNECTION_STRING
+              value: "redis://{{ $fullname }}-redis:6379/1"
+          livenessProbe:
+            httpGet: {path: /api/public/health, port: http}
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: {path: /api/public/health, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-{{ $component }}
+  labels:
+    {{- include "ai-kbs.componentLabels" (dict "ctx" . "component" $component) | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+  selector:
+    {{- include "ai-kbs.componentSelector" (dict "ctx" . "component" $component) | nindent 4 }}
+{{- end }}

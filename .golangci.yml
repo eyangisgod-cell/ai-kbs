@@ -1,0 +1,100 @@
+# AI-KBS repo-root golangci-lint configuration
+# Originally seeded in T0.2; refined in T0.5. Thin shim that points
+# golangci-lint at the per-module config under backend/.golangci.yml.
+#
+# -------------------------------------------------------------------------
+# WHY THIS FILE EXISTS
+# -------------------------------------------------------------------------
+# The project ships exactly one Go module at backend/ (forked from
+# WeKnora). golangci-lint v2 expects its config next to go.mod, so the
+# canonical config lives at backend/.golangci.yml. This repo-root shim
+# provides a formatter-only baseline for the (rare) case where a
+# developer accidentally runs `golangci-lint run` from the repo root
+# without `cd backend` first.
+#
+# KNOWN LIMITATION (T0.5 carry-over from T0.2): golangci-lint v1.x
+# always emits a "directory prefix . does not contain main module"
+# error and exits non-zero when the pattern `...` walks a tree without
+# a parent go.mod. The shim cannot suppress that bootstrap error from
+# golangci-lint itself (it happens before the config is loaded). The
+# honest UX is: this shim narrows the runtime to formatters and a
+# sane exclude-dirs list, so once the bootstrap error is past, only
+# formatting drift on `*.go` files in this directory would be flagged.
+#
+# For real lint coverage, ALWAYS run one of:
+#     cd backend && golangci-lint run ./...
+#     make lint-backend
+#     make lint
+# -------------------------------------------------------------------------
+#
+# When cli/ becomes a real Go module (T0.x follow-up), add `- cli` to
+# the `linters.enable` list under a per-module config there. The root
+# shim does not need to know.
+
+version: "2"
+
+run:
+  modules-download-mode: readonly
+  timeout: 5m
+
+linters:
+  # Type-checking linters are disabled at the repo root because there
+  # is no go.mod here. CI invokes the real config via
+  # `cd backend && golangci-lint run --config backend/.golangci.yml`.
+  default: none
+  enable:
+    # gofmt under `linters.enable` is the v1-compatible way to keep
+    # a sanity formatter check active; the proper `formatters.enable`
+    # block below provides the actual gofmt + goimports pass.
+    - gofmt
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/eyangisgod-cell/ai-kbs
+  exclusions:
+    - path: "vendor/"
+      linters: ["*"]
+    - path: "node_modules/"
+      linters: ["*"]
+    - path: "dist/"
+      linters: ["*"]
+    - path: "frontend/"
+      linters: ["*"]
+    - path: "helm/"
+      linters: ["*"]
+    - path: "docs/"
+      linters: ["*"]
+    - path: "scripts/"
+      linters: ["*"]
+    - path: "mcp-server/"
+      linters: ["*"]
+    - path: "sag-bridge/"
+      linters: ["*"]
+    - path: "docreader/"
+      linters: ["*"]
+    - path: "\\.claude/"
+      linters: ["*"]
+    - path: "\\.trellis/"
+      linters: ["*"]
+    - path: "\\.github/"
+      linters: ["*"]
+
+issues:
+  exclude-dirs:
+    - node_modules
+    - dist
+    - frontend
+    - helm
+    - docs
+    - scripts
+    - mcp-server
+    - sag-bridge
+    - docreader
+    - .claude
+    - .trellis
+    - cli
