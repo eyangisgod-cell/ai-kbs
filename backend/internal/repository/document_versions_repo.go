@@ -24,6 +24,14 @@ type DocumentVersionRepository interface {
 	Get(ctx context.Context, id string) (*domain.DocumentVersion, error)
 	GetByVersion(ctx context.Context, documentID string, version int) (*domain.DocumentVersion, error)
 	ListByDocument(ctx context.Context, documentID string) ([]*domain.DocumentVersion, error)
+	// DeleteByDocumentVersion is the seam used by internal/doc/cas.go
+	// (T1.4) to roll back an orphan version row when the document
+	// header CAS bump loses a race after the version row was
+	// already inserted. Idempotent (returns ErrNotFound when no row
+	// matches); operators may also use this for janitor sweeps of
+	// stale orphans from a process crash between steps 4 and 5 of
+	// the CAS loop.
+	DeleteByDocumentVersion(ctx context.Context, documentID string, version int) error
 }
 
 type documentVersionRepo struct {
@@ -123,6 +131,26 @@ func (r *documentVersionRepo) ListByDocument(ctx context.Context, documentID str
 		return nil, fmt.Errorf("document_version.ListByDocument rows.Err: %w", err)
 	}
 	return out, nil
+}
+
+// DeleteByDocumentVersion removes a single version row by
+// (document_id, version_num). Idempotent: returns ErrNotFound when no
+// row matches. The CAS rollback path in internal/doc/cas.go (T1.4)
+// depends on ErrNotFound being a non-error signal here so that a
+// double-rollback (e.g. operator janitor already swept) does not
+// mask the original CAS failure being surfaced upstream.
+func (r *documentVersionRepo) DeleteByDocumentVersion(ctx context.Context, documentID string, version int) error {
+	const q = `DELETE FROM document_versions
+	           WHERE document_id = $1 AND version_num = $2`
+	tag, err := r.db.Exec(ctx, q, documentID, version)
+	if err != nil {
+		return fmt.Errorf("document_version.DeleteByDocumentVersion doc=%s v=%d: %w",
+			documentID, version, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func scanDocumentVersion(row pgx.Row) (*domain.DocumentVersion, error) {

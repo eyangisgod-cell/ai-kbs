@@ -93,3 +93,22 @@ func TestDocumentVersionRepository_List_OK(t *testing.T) {
 		t.Fatalf("bad order: %+v", out)
 	}
 }
+
+func TestDocumentVersionRepository_DeleteByDocumentVersion_OK(t *testing.T) {
+	m := &mockDBTX{execTag: pgconn.NewCommandTag("DELETE 1")}
+	repo := &documentVersionRepo{db: m}
+	if err := repo.DeleteByDocumentVersion(context.Background(), "d-1", 3); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDocumentVersionRepository_DeleteByDocumentVersion_NotFound(t *testing.T) {
+	// 0 rows affected: must surface as ErrNotFound so the CAS
+	// rollback path (T1.4) treats it as a benign no-op rather
+	// than masking the original CAS failure.
+	m := &mockDBTX{execTag: pgconn.NewCommandTag("DELETE 0")}
+	repo := &documentVersionRepo{db: m}
+	if err := repo.DeleteByDocumentVersion(context.Background(), "missing", 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
