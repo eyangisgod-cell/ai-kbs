@@ -1,0 +1,19 @@
+apiVersion: v2
+name: ai-kbs
+description: AI-KBS — open-source, AI-Agent-first knowledge base system
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+home: https://github.com/eyangisgod-cell/ai-kbs
+sources:
+  - https://github.com/eyangisgod-cell/ai-kbs
+maintainers:
+  - name: AI-KBS Authors
+keywords:
+  - knowledge-base
+  - rag
+  - mcp
+  - ai-agent
+annotations:
+  category: AI
+  licenses: Apache-2.0
