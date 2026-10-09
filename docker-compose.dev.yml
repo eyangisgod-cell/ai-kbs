@@ -361,6 +361,35 @@ services:
       retries: 5
       start_period: 30s
 
+  # ---------------------------------------------------------------------------
+  # langfuse-bootstrap — T0.7 default-dashboard importer.
+  # One-shot sidecar: waits for langfuse to be healthy, logs in via NextAuth,
+  # POSTs docker/langfuse/dashboards/ai-kbs-default.json to the Langfuse REST
+  # API, exits. Idempotent: skips if a dashboard of the same name exists.
+  # restart: on-failure with a bounded retry count keeps a transient startup
+  # hiccup from poisoning the dev stack; once the dashboard is in, this
+  # container exits and stays out of the way.
+  # ---------------------------------------------------------------------------
+  langfuse-bootstrap:
+    build:
+      context: ./docker/langfuse
+      dockerfile: bootstrap/Dockerfile
+    image: ai-kbs/langfuse-bootstrap:dev
+    container_name: ai-kbs-langfuse-bootstrap
+    depends_on:
+      langfuse:
+        condition: service_healthy
+    environment:
+      LANGFUSE_URL: http://langfuse:3000
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-dev@ai-kbs.local}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-changeme-dev-only}
+      LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:-}
+      LANGFUSE_INIT_PROJECT_NAME: ${LANGFUSE_INIT_PROJECT_NAME:-ai-kbs}
+      HEALTH_TIMEOUT_S: "120"
+    restart: on-failure
+    networks:
+      - ai-kbs-net
+
 
 # -----------------------------------------------------------------------------
 # Networks

@@ -1,0 +1,91 @@
+{
+  "name": "AI-KBS Default",
+  "description": "Default observability dashboard for AI-KBS. Auto-imported by docker/langfuse/bootstrap on first Langfuse startup. Maps to NFR-OBS-02 (key metric instrumentation) and NFR-OBS-03 (queue depth).",
+  "panels": [
+    {
+      "id": "qps",
+      "title": "QPS",
+      "type": "timeseries_line",
+      "metric": "trace.count",
+      "unit": "req/s",
+      "window": "1h",
+      "buckets": 60,
+      "y_axis": {"label": "Requests / sec", "min": 0},
+      "description": "Total trace ingest rate across all services (backend, mcp-server, sag-bridge, docreader, cli)."
+    },
+    {
+      "id": "p50_latency",
+      "title": "Latency P50",
+      "type": "timeseries_line",
+      "metric": "trace.latency.p50",
+      "unit": "ms",
+      "window": "1h",
+      "buckets": 60,
+      "y_axis": {"label": "ms", "min": 0},
+      "description": "Median end-to-end request latency."
+    },
+    {
+      "id": "p95_latency",
+      "title": "Latency P95",
+      "type": "timeseries_line",
+      "metric": "trace.latency.p95",
+      "unit": "ms",
+      "window": "1h",
+      "buckets": 60,
+      "y_axis": {"label": "ms", "min": 0},
+      "description": "95th percentile end-to-end request latency. NFR target: < 200ms (ES) / < 2s (SAG)."
+    },
+    {
+      "id": "p99_latency",
+      "title": "Latency P99",
+      "type": "timeseries_line",
+      "metric": "trace.latency.p99",
+      "unit": "ms",
+      "window": "1h",
+      "buckets": 60,
+      "y_axis": {"label": "ms", "min": 0},
+      "description": "99th percentile end-to-end request latency."
+    },
+    {
+      "id": "error_rate",
+      "title": "Error rate",
+      "type": "timeseries_line",
+      "metric": "trace.error_rate",
+      "unit": "%",
+      "window": "1h",
+      "buckets": 60,
+      "y_axis": {"label": "%", "min": 0, "max": 100},
+      "description": "Percentage of traces with non-OK status (HTTP 5xx, exit_code != 0)."
+    },
+    {
+      "id": "llm_token_usage",
+      "title": "LLM token usage",
+      "type": "stacked_area",
+      "metric": "llm.tokens",
+      "unit": "tokens",
+      "window": "1h",
+      "buckets": 60,
+      "series": ["input_tokens", "output_tokens"],
+      "y_axis": {"label": "Tokens", "min": 0},
+      "description": "LLM token consumption, stacked by input vs output. One series per provider (openai, anthropic, deepseek, qwen, ollama)."
+    },
+    {
+      "id": "queue_depth",
+      "title": "Queue depth",
+      "type": "timeseries_line",
+      "metric": "queue.depth",
+      "unit": "tasks",
+      "window": "1h",
+      "buckets": 60,
+      "y_axis": {"label": "Pending tasks", "min": 0},
+      "description": "Pending tasks in the RabbitMQ work queue (parse / index / embedding). Maps to NFR-OBS-03 queue depth requirement."
+    }
+  ],
+  "annotations": {
+    "nfr_targets": [
+      {"id": "nfr-perf-01", "label": "NFR-PERF-01 ES P95 < 200ms", "ref_panel": "p95_latency", "threshold": 200},
+      {"id": "nfr-perf-02", "label": "NFR-PERF-02 SAG P95 < 2s", "ref_panel": "p95_latency", "filter": "engine=sag", "threshold": 2000},
+      {"id": "nfr-perf-06", "label": "NFR-PERF-06 MCP P95 < 100ms", "ref_panel": "p95_latency", "filter": "service=mcp-server", "threshold": 100}
+    ]
+  }
+}
