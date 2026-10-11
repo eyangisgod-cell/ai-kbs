@@ -52,5 +52,5 @@ coverage/
 playwright-report/
 test-results/
 
-# Local requirements discovery docs (preserved in repo for traceability)
-# Note: `require/` is intentionally tracked.
+# Local requirements discovery docs (local-only, never tracked)
+require/
