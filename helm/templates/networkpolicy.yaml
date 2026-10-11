@@ -1,0 +1,42 @@
+{{- if .Values.networkPolicy.enabled -}}
+{{- $fullname := include "ai-kbs.fullname" . -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-default
+  labels:
+    {{- include "ai-kbs.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: ai-kbs
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: ai-kbs
+        {{- with .Values.networkPolicy.ingressNamespaceSelector }}
+        - namespaceSelector:
+            {{- toYaml . | nindent 12 }}
+        {{- end }}
+  egress:
+    # Allow DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Allow inter-pod traffic within the namespace
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: ai-kbs
+{{- end }}

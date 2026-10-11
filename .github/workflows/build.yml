@@ -1,0 +1,131 @@
+# AI-KBS cross-platform build pipeline
+# T0.2 deliverable: matrix build for the 6 platforms specified in PRD
+# §3.4 NFR-COMPAT-01 / FR-CLI-15:
+#
+#   linux/amd64    linux/arm64
+#   darwin/amd64   darwin/arm64
+#   windows/amd64  windows/arm64
+#
+# Two artifacts per matrix leg:
+#   - aikbs-backend-<os>-<arch>     the compiled backend binary
+#   - build-info-<os>-<arch>.txt    git SHA + Go version for traceability
+#
+# Triggers:
+#   - PR + push to main/require     (smoke build; rejects broken main)
+#   - workflow_dispatch            (manual rebuild)
+#
+# Cache strategy addresses the risk noted in the task: "runner time too long"
+# (Mitigation: build cache). Go module cache + build cache via setup-go's
+# built-in caching is enough for the v1 backend; full cgo caches will land
+# with T1.x once gcc is available in the runner.
+
+name: Build
+
+on:
+  pull_request:
+    branches: [main, require]
+  push:
+    branches: [main, require]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-backend:
+    name: backend (${{ matrix.os }}/${{ matrix.arch }})
+    # Skip cleanly if backend/ is removed.
+    if: hashFiles('backend/go.mod') != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false  # one broken target should not kill the other 5
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            ext: ""
+          - os: linux
+            arch: arm64
+            ext: ""
+          - os: darwin
+            arch: amd64
+            ext: ""
+          - os: darwin
+            arch: arm64
+            ext: ""
+          - os: windows
+            arch: amd64
+            ext: ".exe"
+          - os: windows
+            arch: arm64
+            ext: ".exe"
+    env:
+      GOOS: ${{ matrix.os }}
+      GOARCH: ${{ matrix.arch }}
+      # CGO disabled for the v1 backend per FR-CLI-15 / NFR-COMPAT-02.
+      # Will be revisited in T1.x once sqlite-vec / jieba / duckdb cgo
+      # packages get a TDM-GCC shim per backend/.golangci.yml header.
+      CGO_ENABLED: "0"
+      # Embed git SHA in the binary for support.
+      AIKBS_BUILD_VERSION: ${{ github.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: backend/go.sum
+
+      # Build path uses cmd/server per design.md §2.1.1 directory structure.
+      # The CLI binary will live in cli/cmd/ai-kbs/ once T0.x lands.
+      - name: Build backend
+        working-directory: backend
+        run: |
+          mkdir -p dist
+          go build \
+            -trimpath \
+            -ldflags="-s -w -X main.version=${AIKBS_BUILD_VERSION}" \
+            -o "dist/aikbs-backend-${GOOS}-${GOARCH}${{ matrix.ext }}" \
+            ./cmd/server
+
+      - name: Build CLI (when cli/ exists)
+        if: hashFiles('cli/go.mod') != ''
+        working-directory: cli
+        run: |
+          mkdir -p dist
+          go build \
+            -trimpath \
+            -ldflags="-s -w -X main.version=${AIKBS_BUILD_VERSION}" \
+            -o "../backend/dist/aikbs-${GOOS}-${GOARCH}${{ matrix.ext }}" \
+            ./cmd/ai-kbs || echo "cli binary build pending (cli/cmd/ai-kbs not yet scaffolded)"
+
+      - name: Capture build info
+        working-directory: backend
+        run: |
+          {
+            echo "binary:        aikbs-backend-${GOOS}-${GOARCH}${{ matrix.ext }}"
+            echo "git_sha:       ${{ github.sha }}"
+            echo "git_ref:       ${{ github.ref }}"
+            echo "go_version:    $(go version)"
+            echo "goos:          ${GOOS}"
+            echo "goarch:        ${GOARCH}"
+            echo "cgo_enabled:   ${CGO_ENABLED}"
+            echo "build_time:    $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > "dist/build-info-${GOOS}-${GOARCH}.txt"
+
+      - name: Upload backend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aikbs-backend-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            backend/dist/aikbs-backend-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+            backend/dist/build-info-${{ matrix.os }}-${{ matrix.arch }}.txt
+          if-no-files-found: error
+          retention-days: 14

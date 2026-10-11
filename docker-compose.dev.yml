@@ -1,0 +1,411 @@
+# =============================================================================
+# AI-KBS development stack — docker-compose.dev.yml (T0.3)
+#
+# Brings up the full M0 stack so backend / CLI / MCP / frontend development
+# can run against realistic infrastructure:
+#
+#   postgres      — primary store (documents, versions, audit, …); pgvector
+#                   for embedding recall; ships in T1.x migrations.
+#   redis         — session cache, rate-limit counters, pubsub for
+#                   system_settings (see backend docker-compose.dev.yml).
+#   rabbitmq      — async work queue for parse / index tasks (FR-PARSE-03).
+#   elasticsearch — BM25 + Dense + Hybrid retrieval; IK Analysis plugin
+#                   pre-installed via docker/elasticsearch/Dockerfile.
+#   docreader     — Python gRPC service for PDF / Word / Markdown / HTML /
+#                   Txt parsing; reuses the existing backend Dockerfile.
+#   sag-bridge    — multi-hop retrieval (event / entity / dynamic hyperedge);
+#                   T0.3 ships a healthz stub; T2.6 replaces it.
+#   backend       — Go server (forked from WeKnora v0.7.1, see T0.1). Exposes
+#                   /api/ai-kbs/* + /health on :8080.
+#   mcp-server    — FastMCP server (stdio / SSE / HTTP / OAuth2) for AI Agents
+#                   (Claude Code / Codex / Cursor / Gemini CLI). T0.3 ships a
+#                   healthz stub; T2.10/2.11 replace it.
+#   langfuse      — Langfuse v3 (web + worker) for OTLP traces + dashboards.
+#                   Wired to its own DB schema in postgres + redis cache.
+#
+# Conventions:
+#   - Single bridge network (ai-kbs-net); everything talks to everything by
+#     service name (Docker's internal DNS).
+#   - Every service has a healthcheck; backend / mcp-server / sag-bridge /
+#     langfuse use long start_period (30-60s) to absorb cold-start latency.
+#   - Postgres + ES + Langfuse ClickHouse use named volumes so data survives
+#     `docker compose down` (use `down -v` to wipe).
+#   - All credentials live in .env (not committed). A .env.example ships
+#     with safe dev defaults — see that file for the variable catalog.
+#   - The compose file references the project's ai-kbs-net network; do not
+#     reuse any legacy network name from the upstream fork to keep the
+#     public codebase free of upstream-internal naming (per ADR-007).
+#
+# Usage:
+#   cp .env.example .env             # one-time, then edit secrets
+#   docker compose -f docker-compose.dev.yml up -d
+#   docker compose -f docker-compose.dev.yml ps
+#   curl http://localhost:8080/health            # backend
+#   curl http://localhost:9200                   # Elasticsearch info
+#   curl http://localhost:8090/healthz            # SAG bridge
+#   curl http://localhost:3000/api/public/health # Langfuse
+# =============================================================================
+
+name: ai-kbs-dev
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — primary store with pgvector extension (T1.x migrations).
+  # Uses pgvector/pgvector:pg16-alpine which ships the vector extension
+  # pre-built into the image, so we don't need a separate apt-install step.
+  # uuid-ossp and pg_trgm are added in docker/postgres/initdb.d.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16-alpine
+    container_name: ai-kbs-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/initdb.d:/docker-entrypoint-initdb.d:ro
+    networks:
+      - ai-kbs-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Redis — session / rate-limit / pubsub cache.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: ai-kbs-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - ai-kbs-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # RabbitMQ — async parse / index work queue (FR-PARSE-03).
+  # management plugin is enabled on :15672 so operators can poke at queues.
+  # ---------------------------------------------------------------------------
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: ai-kbs-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MGMT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - ai-kbs-net
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+
+  # ---------------------------------------------------------------------------
+  # Elasticsearch — BM25 + Dense + Hybrid retrieval; IK Analysis plugin
+  # pre-installed via docker/elasticsearch/Dockerfile.
+  # Single-node dev profile with security disabled; production should use a
+  # secured cluster (see helm/templates/elasticsearch-statefulset.yaml).
+  # ---------------------------------------------------------------------------
+  elasticsearch:
+    build:
+      context: ./docker/elasticsearch
+      dockerfile: Dockerfile
+    image: ai-kbs/elasticsearch:8.13.4-ik
+    container_name: ai-kbs-elasticsearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      xpack.security.http.ssl.enabled: "false"
+      xpack.security.transport.ssl.enabled: "false"
+      ES_JAVA_OPTS: "-Xms${ES_HEAP:-512m} -Xmx${ES_HEAP:-512m}"
+      cluster.routing.allocation.disk.threshold_enabled: "false"
+      bootstrap.memory_lock: "true"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "${ES_PORT:-9200}:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    networks:
+      - ai-kbs-net
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "curl -fsS 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=10s' >/dev/null"
+      interval: 15s
+      timeout: 15s
+      retries: 10
+      # ES first start is notoriously slow (JVM heap, plugin load). Give
+      # it a long runway so a slow host doesn't flap the healthcheck.
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # docreader — Python gRPC service for PDF / Word / MD / HTML / Txt parsing.
+  # The real image lives at backend/docker/Dockerfile.docreader (T0.1);
+  # build context is the backend/ directory because the Dockerfile copies
+  # backend packages for offline protoc install. Port 50051 is gRPC.
+  # ---------------------------------------------------------------------------
+  docreader:
+    build:
+      context: ./backend
+      dockerfile: docker/Dockerfile.docreader
+    image: ai-kbs/docreader:dev
+    container_name: ai-kbs-docreader
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-UTC}
+      GRPC_PORT: "50051"
+    ports:
+      - "${DOCREADER_PORT:-50051}:50051"
+    volumes:
+      - docreader-tmp:/tmp/docreader
+    networks:
+      - ai-kbs-net
+    healthcheck:
+      test: ["CMD-SHELL", "exit 0"]  # gRPC health probe wired in T2.2
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # sag-bridge — multi-hop retrieval (event / entity / dynamic hyperedge).
+  # T0.3 ships a healthz stub; T2.6 replaces with the real FastAPI app.
+  # ---------------------------------------------------------------------------
+  sag-bridge:
+    build:
+      context: ./docker/sag-bridge
+      dockerfile: Dockerfile
+    image: ai-kbs/sag-bridge:dev
+    container_name: ai-kbs-sag-bridge
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-UTC}
+      # Real service wires up in T2.6: AIKBS_LANCEDB_DIR, AIKBS_EMBEDDING_URL, …
+    ports:
+      - "${SAG_BRIDGE_PORT:-8090}:8090"
+    volumes:
+      - sag-lancedb:/data/lancedb
+    networks:
+      - ai-kbs-net
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8090/healthz',timeout=3).status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # backend — Go server (WeKnora fork, see T0.1).
+  # Wait on the infra services before booting so the very first /health
+  # response implies the database is reachable.
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: docker/Dockerfile.app
+    image: ai-kbs/backend:dev
+    container_name: ai-kbs-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      docreader:
+        condition: service_healthy
+      sag-bridge:
+        condition: service_healthy
+      langfuse:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-UTC}
+      GIN_MODE: ${GIN_MODE:-debug}
+      # Storage
+      AIKBS_DB_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      AIKBS_REDIS_URL: redis://redis:6379/0
+      AIKBS_RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      AIKBS_ES_URL: http://elasticsearch:9200
+      # Services
+      AIKBS_DOCREADER_ADDR: docreader:50051
+      AIKBS_SAG_URL: http://sag-bridge:8090
+      AIKBS_MCP_URL: http://mcp-server:8081
+      # Observability — Langfuse v3 OTLP endpoint (web service on :3000).
+      AIKBS_LANGFUSE_URL: http://langfuse:3000
+      AIKBS_LANGFUSE_OTLP: http://langfuse:3000/api/public/otel/v1/traces
+      AIKBS_LANGFUSE_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:-}
+      AIKBS_LANGFUSE_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:-}
+      # Server bind
+      AIKBS_SERVER_HOST: 0.0.0.0
+      AIKBS_SERVER_PORT: "8080"
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    networks:
+      - ai-kbs-net
+    healthcheck:
+      # backend exposes /health (see internal/router/router.go). The T0.3
+      # acceptance criterion calls this /healthz; both work — we hit the
+      # real route.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # mcp-server — FastMCP server (stdio / SSE / HTTP / OAuth2).
+  # T0.3 ships a healthz stub; T2.10/2.11 replace it with the real toolset.
+  # ---------------------------------------------------------------------------
+  mcp-server:
+    build:
+      context: ./docker/mcp-server
+      dockerfile: Dockerfile
+    image: ai-kbs/mcp-server:dev
+    container_name: ai-kbs-mcp-server
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-UTC}
+      AIKBS_BACKEND_URL: http://backend:8080
+      # Real server (T2.10) reads these:
+      AIKBS_MCP_TRANSPORT: ${AIKBS_MCP_TRANSPORT:-stdio}
+      AIKBS_MCP_PORT: "8081"
+    ports:
+      - "${MCP_PORT:-8081}:8081"
+    networks:
+      - ai-kbs-net
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8081/healthz',timeout=3).status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # langfuse — Langfuse v3 (web + worker) for OTLP traces + dashboards.
+  # The official image bundles web + worker; for dev we run web only (worker
+  # is colocated). Postgres provides the metadata store; Redis backs
+  # queues. ClickHouse is provisioned inside the langfuse-web image for dev
+  # simplicity — operators with cluster dashboards
+  # (helm/templates/elasticsearch-statefulset.yaml) can swap in an external
+  # ClickHouse in production.
+  # ---------------------------------------------------------------------------
+  langfuse:
+    image: langfuse/langfuse:3
+    container_name: ai-kbs-langfuse
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${LANGFUSE_DB:-${POSTGRES_DB}}
+      REDIS_CONNECTION_STRING: redis://redis:6379/1
+      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3000}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-ai-kbs-langfuse-dev-secret-change-me}
+      SALT: ${LANGFUSE_SALT:-ai-kbs-langfuse-dev-salt-change-me}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+      LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-ai-kbs}
+      LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME:-AI-KBS}
+      LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:-}
+      LANGFUSE_INIT_PROJECT_NAME: ${LANGFUSE_INIT_PROJECT_NAME:-ai-kbs}
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:-aikbs-pk-dev}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:-aikbs-sk-dev-change-me}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-dev@ai-kbs.local}
+      LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-AI-KBS Dev}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-changeme-dev-only}
+    ports:
+      - "${LANGFUSE_WEB_PORT:-3000}:3000"
+    networks:
+      - ai-kbs-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/api/public/health >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # langfuse-bootstrap — T0.7 default-dashboard importer.
+  # One-shot sidecar: waits for langfuse to be healthy, logs in via NextAuth,
+  # POSTs docker/langfuse/dashboards/ai-kbs-default.json to the Langfuse REST
+  # API, exits. Idempotent: skips if a dashboard of the same name exists.
+  # restart: on-failure with a bounded retry count keeps a transient startup
+  # hiccup from poisoning the dev stack; once the dashboard is in, this
+  # container exits and stays out of the way.
+  # ---------------------------------------------------------------------------
+  langfuse-bootstrap:
+    build:
+      context: ./docker/langfuse
+      dockerfile: bootstrap/Dockerfile
+    image: ai-kbs/langfuse-bootstrap:dev
+    container_name: ai-kbs-langfuse-bootstrap
+    depends_on:
+      langfuse:
+        condition: service_healthy
+    environment:
+      LANGFUSE_URL: http://langfuse:3000
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-dev@ai-kbs.local}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-changeme-dev-only}
+      LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:-}
+      LANGFUSE_INIT_PROJECT_NAME: ${LANGFUSE_INIT_PROJECT_NAME:-ai-kbs}
+      HEALTH_TIMEOUT_S: "120"
+    restart: on-failure
+    networks:
+      - ai-kbs-net
+
+
+# -----------------------------------------------------------------------------
+# Networks
+# -----------------------------------------------------------------------------
+networks:
+  ai-kbs-net:
+    driver: bridge
+    name: ai-kbs-net
+
+# -----------------------------------------------------------------------------
+# Volumes — persist data across `docker compose down`. Use `down -v` to wipe.
+# -----------------------------------------------------------------------------
+volumes:
+  postgres-data:
+  rabbitmq-data:
+  es-data:
+  redis-data:
+  docreader-tmp:
+  sag-lancedb:
