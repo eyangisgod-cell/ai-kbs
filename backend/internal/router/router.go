@@ -128,6 +128,13 @@ func NewRouter(params RouterParams) *gin.Engine {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
+	// Envelope v1.0 contract demo (T1.7 best-practice switch). Public; no
+	// auth required. The handler exercises every branch of the envelope so
+	// reviewers can see the canonical pattern end-to-end. Subsequent handler
+	// migrations to envelope live in follow-up commits.
+	demo := handler.NewEnvelopeDemoHandler()
+	r.GET("/envelope-demo", demo.Demo)
+
 	// Swagger API 文档（仅在非生产环境下启用）
 	// 通过 GIN_MODE 环境变量判断：release 模式下禁用 Swagger
 	if gin.Mode() != gin.ReleaseMode {
