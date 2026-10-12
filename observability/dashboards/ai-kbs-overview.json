@@ -1,0 +1,195 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "datasource",
+          "uid": "grafana"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "AI-KBS aggregate infra metrics — companion to the Langfuse trace UI (T0.7 / T1.8). Six metric classes per NFR-OBS-03: QPS, latency, error rate, queue depth, LLM token, cache hit rate.",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "HTTP QPS (per route)",
+      "description": "Per-second request rate, partitioned by method and path template. Source: ai_kbs_http_requests_total.",
+      "id": 1,
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "targets": [
+        {
+          "expr": "sum by (path) (rate(ai_kbs_http_requests_total[1m]))",
+          "legendFormat": "{{path}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10}
+        }
+      },
+      "options": {"legend": {"displayMode": "table", "placement": "right"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP latency p50 / p95 / p99 (per route)",
+      "description": "Latency percentiles derived from the histogram ai_kbs_http_request_duration_seconds.",
+      "id": 2,
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, path) (rate(ai_kbs_http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{path}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, path) (rate(ai_kbs_http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{path}}",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, path) (rate(ai_kbs_http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99 {{path}}",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 5}
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP error rate (4xx + 5xx)",
+      "description": "Error rate = rate(ai_kbs_http_requests_errors_total) / rate(ai_kbs_http_requests_total).",
+      "id": 3,
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "targets": [
+        {
+          "expr": "sum by (code) (rate(ai_kbs_http_requests_errors_total[5m])) / sum (rate(ai_kbs_http_requests_total[5m]))",
+          "legendFormat": "{{code}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10}
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Queue depth (asynq / MQ)",
+      "description": "Per-queue pending task count. Source: ai_kbs_queue_depth.",
+      "id": 4,
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "targets": [
+        {
+          "expr": "ai_kbs_queue_depth",
+          "legendFormat": "{{queue_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 20}
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "LLM token usage (prompt vs completion)",
+      "description": "Cumulative token usage per model, split by direction. Source: ai_kbs_llm_tokens_total.",
+      "id": 5,
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "targets": [
+        {
+          "expr": "sum by (model, direction) (rate(ai_kbs_llm_tokens_total[5m]))",
+          "legendFormat": "{{model}} / {{direction}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10}
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Cache hit rate (per cache name)",
+      "description": "Hit rate = rate(ai_kbs_cache_hits_total) / (rate(ai_kbs_cache_hits_total) + rate(ai_kbs_cache_misses_total)).",
+      "id": 6,
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "targets": [
+        {
+          "expr": "sum by (cache_name) (rate(ai_kbs_cache_hits_total[5m])) / (sum by (cache_name) (rate(ai_kbs_cache_hits_total[5m])) + sum by (cache_name) (rate(ai_kbs_cache_misses_total[5m])))",
+          "legendFormat": "{{cache_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 20}
+        }
+      }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["ai-kbs", "observability", "prometheus", "t1.21"],
+  "templating": {
+    "list": [
+      {
+        "current": {"selected": false, "text": "Prometheus", "value": "Prometheus"},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "AI-KBS — Aggregate Overview (Prometheus)",
+  "uid": "ai-kbs-overview",
+  "version": 1,
+  "weekStart": ""
+}

@@ -123,6 +123,13 @@ func NewRouter(params RouterParams) *gin.Engine {
 	r.Use(middleware.Recovery())
 	r.Use(middleware.ErrorHandler())
 
+	// Prometheus HTTP metrics middleware (T1.21 / AC-B10). Installed AFTER
+	// the basic middlewares so c.FullPath() resolves to the gin route
+	// template and AFTER the recovery layer so 5xx panics are counted.
+	// Installed BEFORE auth / RBAC so 401 / 403 responses are also recorded
+	// (otherwise an attacker probing for authn gaps would be invisible).
+	r.Use(middleware.HTTPMetrics())
+
 	// 健康检查（不需要认证）
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
@@ -134,6 +141,15 @@ func NewRouter(params RouterParams) *gin.Engine {
 	// migrations to envelope live in follow-up commits.
 	demo := handler.NewEnvelopeDemoHandler()
 	r.GET("/envelope-demo", demo.Demo)
+
+	// Prometheus scrape endpoint (T1.21 / AC-B10). Registered BEFORE the
+	// auth middleware so scrapers (which cannot carry our HMAC / JWT /
+	// APIKey credentials) can reach it without 401. Network-level controls
+	// (firewall / service-mesh policy) keep the endpoint reachable only
+	// from the monitoring subnet.
+	metricsHandler := handler.NewMetricsHandler()
+	r.GET("/metrics", metricsHandler.Metrics)
+	r.GET("/metrics/ping", metricsHandler.Ping)
 
 	// Swagger API 文档（仅在非生产环境下启用）
 	// 通过 GIN_MODE 环境变量判断：release 模式下禁用 Swagger
