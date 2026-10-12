@@ -62,3 +62,46 @@ package observe_test
 // (the second call to ParseTraceparent inside NewEnvelopeWithTraceID is
 //  cheap — it's a single string scan — so production handlers can do
 //  this without worrying about double-parse cost.)
+//
+// ---------------------------------------------------------------------------
+// Prometheus aggregate metrics (T1.21) — example call sites.
+// The HTTP middleware at internal/middleware/metrics.go covers QPS /
+// latency / error rate; the helpers below cover queue depth, LLM token
+// usage, and cache hit / miss.
+//
+// Recording queue depth after an asynq inspect call:
+//
+//	queues, _ := inspector.Queues()
+//	for _, q := range queues {
+//	    info, _ := inspector.GetQueueInfo(q)
+//	    observe.SetQueueDepth(q, info.Pending)
+//	}
+//
+// Recording LLM token usage at the call site of a chat completion:
+//
+//	resp, err := client.Chat(ctx, msgs)
+//	if err == nil {
+//	    observe.AddLLMTokens(modelName, observe.LLMDirectionPrompt,     int64(resp.Usage.PromptTokens))
+//	    observe.AddLLMTokens(modelName, observe.LLMDirectionCompletion, int64(resp.Usage.CompletionTokens))
+//	}
+//
+// Recording cache hit / miss inside a cache wrapper:
+//
+//	if v, ok := cache.Get(key); ok {
+//	    observe.IncCacheHit("doc_lookup")
+//	    return v
+//	}
+//	observe.IncCacheMiss("doc_lookup")
+//	v := loadFromDB(key)
+//	cache.Set(key, v)
+//	return v
+//
+// ---------------------------------------------------------------------------
+// Exposing the /metrics scrape endpoint (T1.21 / AC-B10):
+//
+//	router.GET("/metrics", handler.NewMetricsHandler().Metrics)
+//
+// The handler is registered in internal/router/router.go WITHOUT auth —
+// Prometheus scrapers cannot carry our HMAC / JWT / APIKey credentials.
+// Network-level controls (firewall / service-mesh policy) keep the
+// endpoint reachable only from the monitoring subnet.
