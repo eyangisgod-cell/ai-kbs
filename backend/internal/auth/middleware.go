@@ -36,6 +36,12 @@ const (
 	AuthModeAPIKey AuthMode = "apikey"
 )
 
+// apiKeyVerifyFailedMessage is the single user-facing message returned
+// for any API-key credential problem that could otherwise leak whether a
+// key ID exists (malformed / unknown / bad-secret). The wire envelope
+// error.code stays distinct so internal observability is unaffected.
+const apiKeyVerifyFailedMessage = "api key verification failed"
+
 // PrincipalResolver is the dependency the middleware needs to turn an
 // authenticated credential into a *types.User. Repositories or services
 // implement it; tests pass a stub.
@@ -207,13 +213,18 @@ func authAPIKey(c *gin.Context, cfg MiddlewareConfig) {
 	}
 	rec, err := ResolveAPIKey(raw, cfg.APIKeyLookup)
 	if err != nil {
+		// Malformed / unknown-key / bad-secret all collapse to a single
+		// user-facing message AND a single HTTP status so an attacker
+		// cannot probe whether a key exists by comparing the wire text
+		// or status code. The internal envelope error.code stays distinct
+		// so ops can still distinguish the three paths in logs.
 		switch {
 		case errors.Is(err, ErrAPIKeyMalformed):
 			writeAuthError(c, cfg.RequestID(c), envelope.CodeAuthPermissionDenied,
-				"malformed api key", http.StatusUnauthorized)
+				apiKeyVerifyFailedMessage, http.StatusUnauthorized)
 		case errors.Is(err, ErrAPIKeyNotFound):
 			writeAuthError(c, cfg.RequestID(c), envelope.CodeAuthPermissionDenied,
-				"unknown api key", http.StatusUnauthorized)
+				apiKeyVerifyFailedMessage, http.StatusUnauthorized)
 		case errors.Is(err, ErrAPIKeyRevoked):
 			writeAuthError(c, cfg.RequestID(c), envelope.CodeAuthAPIKeyRevoked,
 				"api key revoked", http.StatusUnauthorized)
@@ -222,7 +233,7 @@ func authAPIKey(c *gin.Context, cfg MiddlewareConfig) {
 				"api key expired", http.StatusUnauthorized)
 		default:
 			writeAuthError(c, cfg.RequestID(c), envelope.CodeAuthPermissionDenied,
-				"api key secret mismatch", http.StatusForbidden)
+				apiKeyVerifyFailedMessage, http.StatusUnauthorized)
 		}
 		return
 	}

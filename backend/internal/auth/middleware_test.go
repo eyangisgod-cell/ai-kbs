@@ -340,7 +340,41 @@ func TestMiddleware_APIKey_BadSecret(t *testing.T) {
 		APIKeyLookup: store,
 		Principal:    stub,
 	}), "GET", "/api/ai-kbs/x", "APIKey ak_abc.wrong-secret", nil)
-	assertEnvelope(t, w, envelope.CodeAuthPermissionDenied, http.StatusForbidden)
+	assertEnvelope(t, w, envelope.CodeAuthPermissionDenied, http.StatusUnauthorized)
+}
+
+// TestMiddleware_APIKey_ErrorMessagesCollapsed pins the regression that
+// motivated the unification: an unknown key, a malformed key, and a
+// wrong-secret must all return the SAME user-facing message so an
+// attacker cannot probe whether a key ID exists by comparing the wire
+// text. Internal observability keeps distinct envelope codes (tested
+// above) — only the message text is collapsed.
+func TestMiddleware_APIKey_ErrorMessagesCollapsed(t *testing.T) {
+	hash, _ := HashAPIKeySecret("real-secret")
+	store := staticRecordStore{
+		"ak_abc": {KeyID: "ak_abc", Hash: hash, Capabilities: []types.APIKeyCapability{types.APIKeyCapabilityRetrieve}},
+	}
+	stub := &stubPrincipal{apiUser: &types.User{ID: "u"}}
+	cases := []struct {
+		name, hdr string
+	}{
+		{"unknown", "APIKey ak_ghost.something"},
+		{"malformed", "APIKey not-a-key"},
+		{"bad-secret", "APIKey ak_abc.wrong-secret"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			w := runRequest(Middleware(MiddlewareConfig{
+				APIKeyLookup: store,
+				Principal:    stub,
+			}), "GET", "/api/ai-kbs/x", tc.hdr, nil)
+			env := assertEnvelope(t, w, envelope.CodeAuthPermissionDenied, http.StatusUnauthorized)
+			if env.Error == nil || env.Error.Message != apiKeyVerifyFailedMessage {
+				t.Fatalf("error.message = %q, want %q", env.Error.Message, apiKeyVerifyFailedMessage)
+			}
+		})
+	}
 }
 
 func TestMiddleware_APIKey_InjectsCapabilities(t *testing.T) {

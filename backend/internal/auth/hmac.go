@@ -21,6 +21,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -187,13 +188,17 @@ func NewMemoryNonceStore(ttl time.Duration) NonceStore {
 }
 
 type memoryNonceStore struct {
+	mu   sync.Mutex
 	ttl  time.Duration
 	seen map[string]time.Time
 }
 
-// memoryNonceStore does not need a mutex because tests run sequentially;
-// production uses the Redis adapter.
+// CheckAndSet is safe for concurrent use. The mutex covers both the
+// existence check and the insert so two goroutines presenting the same
+// (keyID, nonce) cannot both observe an empty slot.
 func (m *memoryNonceStore) CheckAndSet(keyID, nonce string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	k := keyID + "|" + nonce
 	now := time.Now()
 	if t, ok := m.seen[k]; ok && now.Sub(t) < m.ttl {
