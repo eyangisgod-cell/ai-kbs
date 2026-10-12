@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -349,3 +351,47 @@ func TestComputeSignature_IsConstantTimeComparable(t *testing.T) {
 
 // Helper: silence unused warnings if a refactor drops some imports.
 var _ = http.MethodGet
+
+// TestMemoryNonceStore_ConcurrentReplayGuard pins the regression that
+// motivated the mutex: without it, two goroutines presenting the same
+// (keyID, nonce) can both observe an empty slot and double-succeed,
+// which is the replay attack CheckAndSet exists to block. With the
+// mutex, exactly one of 100 concurrent goroutines wins.
+func TestMemoryNonceStore_ConcurrentReplayGuard(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryNonceStore(time.Minute)
+	const goroutines = 100
+	var (
+		wg       sync.WaitGroup
+		okCount  int32
+		replays  int32
+		other    int32
+	)
+	wg.Add(goroutines)
+	start := make(chan struct{})
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			switch err := store.CheckAndSet("k", "n"); {
+			case err == nil:
+				atomic.AddInt32(&okCount, 1)
+			case errors.Is(err, ErrNonceReplay):
+				atomic.AddInt32(&replays, 1)
+			default:
+				atomic.AddInt32(&other, 1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if okCount != 1 {
+		t.Fatalf("expected exactly 1 success under concurrent SETNX, got ok=%d replay=%d other=%d", okCount, replays, other)
+	}
+	if replays != goroutines-1 {
+		t.Fatalf("expected %d replays, got replay=%d other=%d", goroutines-1, replays, other)
+	}
+	if other != 0 {
+		t.Fatalf("unexpected non-replay errors: %d", other)
+	}
+}
